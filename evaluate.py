@@ -74,18 +74,19 @@ def run_eval(model, eval_loader, args, output_suffix=''):
   start_time = time.time()
   for i, (batch, ctx_frames, filenames) in enumerate(eval_loader):
 
-      batch = Variable(batch.cuda(), volatile=True)
+      with torch.no_grad():
+          batch = batch.cuda()
 
-      original, out_imgs, losses, code_batch = eval_forward(
-          model, (batch, ctx_frames), args)
+          original, out_imgs, losses, code_batch = eval_forward(
+              model, (batch, ctx_frames), args)
 
-      losses, msssim, psnr = finish_batch(
-          args, filenames, original, out_imgs, 
-          losses, code_batch, output_suffix)
+          losses, msssim, psnr = finish_batch(
+              args, filenames, original, out_imgs, 
+              losses, code_batch, output_suffix)
 
-      all_losses += losses
-      all_msssim += msssim
-      all_psnr += psnr
+          all_losses += losses
+          all_msssim += msssim
+          all_psnr += psnr
 
       if i % 10 == 0:
         print('\tevaluating iter %d (%f seconds)...' % (
