@@ -13,6 +13,7 @@ from util import eval_forward, evaluate, get_models, set_eval, save_numpy_array_
 from torchvision import transforms
 from dataset import get_loader
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu') 
 
 def save_codes(name, codes):
   print(codes)
@@ -95,3 +96,4 @@ def run_eval(model, eval_loader, args, output_suffix=''):
   return (np.array(all_losses).mean(axis=0),
           np.array(all_msssim).mean(axis=0),
           np.array(all_psnr).mean(axis=0))
+

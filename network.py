@@ -10,9 +10,10 @@ class EncoderCell(nn.Module):
         super(EncoderCell, self).__init__()
 
         # Init.
-        self.v_compress = v_compress
-        self.fuse_encoder = fuse_encoder
-        self.fuse_level = fuse_level
+        # stack True
+        self.v_compress = v_compress #True
+        self.fuse_encoder = fuse_encoder #True
+        self.fuse_level = fuse_level #1
         if fuse_encoder:
             print('\tEncoder fuse level: {}'.format(self.fuse_level))
 
@@ -51,30 +52,46 @@ class EncoderCell(nn.Module):
             hidden_kernel_size=1,
             bias=False)
 
+        #input not configured for fuse -kk
+        self.rnn4 = ConvLSTMCell(
+            512,  
+            512,
+            kernel_size=3,
+            stride=2,
+            padding=1,
+            hidden_kernel_size=1,
+            bias=False)
 
-    def forward(self, input, hidden1, hidden2, hidden3,
+
+    def forward(self, input, hidden1, hidden2, hidden3, hidden4,
                 unet_output1, unet_output2):
 
+        #print(len(unet_output1),len(unet_output2))
         x = self.conv(input)
         # Fuse
         if self.v_compress and self.fuse_encoder:
-            x = torch.cat([x, unet_output1[2], unet_output2[2]], dim=1)
+            x = torch.cat([x, unet_output1[3], unet_output2[3]], dim=1)
 
         hidden1 = self.rnn1(x, hidden1)
         x = hidden1[0]
         # Fuse.
         if self.v_compress and self.fuse_encoder and self.fuse_level >= 2:
-            x = torch.cat([x, unet_output1[1], unet_output2[1]], dim=1)
+            x = torch.cat([x, unet_output1[2], unet_output2[2]], dim=1)
 
         hidden2 = self.rnn2(x, hidden2)
         x = hidden2[0]
         # Fuse.
         if self.v_compress and self.fuse_encoder and self.fuse_level >= 3:
-            x = torch.cat([x, unet_output1[0], unet_output2[0]], dim=1)
+            x = torch.cat([x, unet_output1[1], unet_output2[1]], dim=1)
 
         hidden3 = self.rnn3(x, hidden3)
         x = hidden3[0]
-        return x, hidden1, hidden2, hidden3
+        if self.v_compress and self.fuse_encoder and self.fuse_level >= 4:
+            x = torch.cat([x, unet_output1[0], unet_output2[0]], dim=1)
+
+        hidden4 = self.rnn4(x, hidden4)
+        x = hidden4[0]
+        return x, hidden1, hidden2, hidden3, hidden4
 
 
 class Binarizer(nn.Module):
@@ -112,7 +129,17 @@ class DecoderCell(nn.Module):
             hidden_kernel_size=1,
             bias=False)
 
-        self.rnn2 = ConvLSTMCell(
+        #input not configured for fuse -kk
+        self.rnn2 = ConvLSTMCell(   
+            128,
+            512,
+            kernel_size=3,
+            stride=1,
+            padding=1,
+            hidden_kernel_size=1,
+            bias=False)
+
+        self.rnn3 = ConvLSTMCell(
             (((128 + 256 // shrink * 2) if v_compress else 128) 
              if self.fuse_level >= 3 else 128), #out1=256
             512,
@@ -122,7 +149,7 @@ class DecoderCell(nn.Module):
             hidden_kernel_size=1,
             bias=False)
 
-        self.rnn3 = ConvLSTMCell(
+        self.rnn4 = ConvLSTMCell(
             (((128 + 128//shrink*2) if v_compress else 128) 
              if self.fuse_level >= 2 else 128), #out2=128
             256,
@@ -132,7 +159,7 @@ class DecoderCell(nn.Module):
             hidden_kernel_size=3,
             bias=False)
 
-        self.rnn4 = ConvLSTMCell(
+        self.rnn5 = ConvLSTMCell(
             (64 + 64//shrink*2) if v_compress else 64, #out3=64
             128,
             kernel_size=3,
@@ -146,7 +173,7 @@ class DecoderCell(nn.Module):
             3, 
             kernel_size=1, stride=1, padding=0, bias=False)
 
-    def forward(self, input, hidden1, hidden2, hidden3, hidden4,
+    def forward(self, input, hidden1, hidden2, hidden3, hidden4, hidden5,
                 unet_output1, unet_output2):
 
         x = self.conv1(input)
@@ -156,33 +183,42 @@ class DecoderCell(nn.Module):
         x = hidden1[0]
         x = F.pixel_shuffle(x, 2)
 
-        if self.v_compress and self.fuse_level >= 3:
+        if self.v_compress and self.fuse_level >= 4:
             x = torch.cat([x, unet_output1[0], unet_output2[0]], dim=1)
 
         hidden2 = self.rnn2(x, hidden2)
 
-        # rnn 3
         x = hidden2[0]
         x = F.pixel_shuffle(x, 2)
 
-        if self.v_compress and self.fuse_level >= 2:
+        if self.v_compress and self.fuse_level >= 3:
             x = torch.cat([x, unet_output1[1], unet_output2[1]], dim=1)
 
         hidden3 = self.rnn3(x, hidden3)
 
-        # rnn 4
+        # rnn 3
         x = hidden3[0]
         x = F.pixel_shuffle(x, 2)
 
-        if self.v_compress:
+        if self.v_compress and self.fuse_level >= 2:
             x = torch.cat([x, unet_output1[2], unet_output2[2]], dim=1)
 
         hidden4 = self.rnn4(x, hidden4)
 
-        # final
+        # rnn 4
         x = hidden4[0]
         x = F.pixel_shuffle(x, 2)
 
+        if self.v_compress:
+            x = torch.cat([x, unet_output1[3], unet_output2[3]], dim=1)
+
+        hidden5 = self.rnn5(x, hidden5)
+
+        # final
+        x = hidden5[0]
+        x = F.pixel_shuffle(x, 2)
+
         x = F.tanh(self.conv2(x)) / 2
-        return x, hidden1, hidden2, hidden3, hidden4
+        return x, hidden1, hidden2, hidden3, hidden4, hidden5
+
 

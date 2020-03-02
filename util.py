@@ -13,6 +13,7 @@ import network
 from metric import msssim, psnr
 from unet import UNet
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu') 
 
 def get_models(args, v_compress, bits, encoder_fuse_level, decoder_fuse_level):
 
@@ -21,18 +22,18 @@ def get_models(args, v_compress, bits, encoder_fuse_level, decoder_fuse_level):
         stack=args.stack,
         fuse_encoder=args.fuse_encoder,
         fuse_level=encoder_fuse_level
-    ).cuda()
+    ).to(device)
 
-    binarizer = network.Binarizer(bits).cuda()
+    binarizer = network.Binarizer(bits).to(device)
 
     decoder = network.DecoderCell(
         v_compress=v_compress, shrink=args.shrink,
         bits=bits,
         fuse_level=decoder_fuse_level
-    ).cuda()
+    ).to(device)
 
     if v_compress:
-        unet = UNet(3, args.shrink).cuda()
+        unet = UNet(3, args.shrink).to(device)
     else:
         unet = None
 
@@ -41,7 +42,7 @@ def get_models(args, v_compress, bits, encoder_fuse_level, decoder_fuse_level):
 
 def get_identity_grid(size):
     id_mat = Variable(torch.FloatTensor([[1, 0, 0, 0, 1, 0]] * size[0]), 
-        requires_grad=False).view(-1, 2, 3).cuda()
+        requires_grad=False).view(-1, 2, 3).to(device)
     return F.affine_grid(id_mat, size)
 
 
@@ -80,16 +81,19 @@ def get_flows(flow):
     flow_4 = down_sample(flow)
     flow_3 = down_sample(flow_4)
     flow_2 = down_sample(flow_3)
+    flow_1 = down_sample(flow_2)
 
     flow_4 = transpose_to_grid(flow_4)
     flow_3 = transpose_to_grid(flow_3)
     flow_2 = transpose_to_grid(flow_2)
+    flow_1 = transpose_to_grid(flow_1)
 
     final_grid_4 = flow_4 + 0.5
     final_grid_3 = flow_3 + 0.5
     final_grid_2 = flow_2 + 0.5
+    final_grid_1 = flow_1 + 0.5
 
-    return [final_grid_4, final_grid_3, final_grid_2]
+    return [final_grid_4, final_grid_3, final_grid_2, final_grid_1]
 
 
 def prepare_batch(batch, v_compress, warp):
@@ -162,7 +166,7 @@ def prepare_inputs(crops, args, unet_output1, unet_output2):
     warped_unet_output2 = []
 
     for crop_idx, data in enumerate(crops):
-        patches = Variable(data.cuda())
+        patches = Variable(data.to(device))
 
         res, frame1, frame2, flows = prepare_batch(patches, args.v_compress, args.warp)
         data_arr.append(res)
@@ -187,7 +191,7 @@ def prepare_inputs(crops, args, unet_output1, unet_output2):
 
 
 def forward_ctx(unet, ctx_frames):
-    ctx_frames = Variable(ctx_frames.cuda()) - 0.5
+    ctx_frames = Variable(ctx_frames.to(device)) - 0.5
     frame1 = ctx_frames[:, :3]
     frame2 = ctx_frames[:, 3:]
 
@@ -199,6 +203,7 @@ def forward_ctx(unet, ctx_frames):
         unet_output1.append(u_out1)
         unet_output2.append(u_out2)
 
+    #print(len(unet_output1),len(unet_output2))
     return unet_output1, unet_output2
 
 
@@ -207,18 +212,18 @@ def forward_model(model, cooked_batch, ctx_frames, args, v_compress,
     encoder, binarizer, decoder, unet = model
     res, _, _, flows = cooked_batch
 
-    ctx_frames = Variable(ctx_frames.cuda()) - 0.5
+    ctx_frames = Variable(ctx_frames.to(device)) - 0.5
     frame1 = ctx_frames[:, :3]
     frame2 = ctx_frames[:, 3:]
 
     init_rnn = init_lstm
 
     batch_size, _, height, width = res.size()
-    (encoder_h_1, encoder_h_2, encoder_h_3,
-     decoder_h_1, decoder_h_2, decoder_h_3, decoder_h_4) = init_rnn(batch_size,
-                                                                      height,
-                                                                      width,
-                                                                      args)
+    (encoder_h_1, encoder_h_2, encoder_h_3, encoder_h_4,
+     decoder_h_1, decoder_h_2, decoder_h_3, decoder_h_4, decoder_h_5) = init_rnn(batch_size,
+                                                                              height,
+                                                                              width,
+                                                                              args)
 
     original = res.data.cpu().numpy() + 0.5
 
@@ -227,11 +232,11 @@ def forward_model(model, cooked_batch, ctx_frames, args, v_compress,
     losses = []
 
     # UNet.
-    enc_unet_output1 = Variable(torch.zeros(args.batch_size,), volatile=True).cuda()
-    enc_unet_output2 = Variable(torch.zeros(args.batch_size,), volatile=True).cuda()
+    enc_unet_output1 = Variable(torch.zeros(args.batch_size,), volatile=True).to(device)
+    enc_unet_output2 = Variable(torch.zeros(args.batch_size,), volatile=True).to(device)
 
-    dec_unet_output1 = Variable(torch.zeros(args.batch_size,), volatile=True).cuda()
-    dec_unet_output2 = Variable(torch.zeros(args.batch_size,), volatile=True).cuda()
+    dec_unet_output1 = Variable(torch.zeros(args.batch_size,), volatile=True).to(device)
+    dec_unet_output2 = Variable(torch.zeros(args.batch_size,), volatile=True).to(device)
     if v_compress:
         # Use decoded context frames to decode.
         dec_unet_output1, dec_unet_output2 =  prepare_unet_output(
@@ -239,8 +244,8 @@ def forward_model(model, cooked_batch, ctx_frames, args, v_compress,
 
         enc_unet_output1, enc_unet_output2 = dec_unet_output1, dec_unet_output2
 
-        assert len(enc_unet_output1) == 3 and len(enc_unet_output2) == 3, (len(enc_unet_output1), len(enc_unet_output2))
-        assert len(dec_unet_output1) == 3 and len(dec_unet_output2) == 3, (len(dec_unet_output1), len(dec_unet_output2))
+        assert len(enc_unet_output1) == 4 and len(enc_unet_output2) == 4, (len(enc_unet_output1), len(enc_unet_output2))
+        assert len(dec_unet_output1) == 4 and len(dec_unet_output2) == 4, (len(dec_unet_output1), len(dec_unet_output2))
         for jj in range(3 - max(encoder_fuse_level, decoder_fuse_level)):
             enc_unet_output1[jj] = None
             enc_unet_output2[jj] = None
@@ -257,8 +262,8 @@ def forward_model(model, cooked_batch, ctx_frames, args, v_compress,
             encoder_input = res
 
         # Encode.
-        encoded, encoder_h_1, encoder_h_2, encoder_h_3 = encoder(
-            encoder_input, encoder_h_1, encoder_h_2, encoder_h_3,
+        encoded, encoder_h_1, encoder_h_2, encoder_h_3, encoder_h_4 = encoder(
+            encoder_input, encoder_h_1, encoder_h_2, encoder_h_3, encoder_h_4,
             enc_unet_output1, enc_unet_output2)
 
         # Binarize.
@@ -266,8 +271,8 @@ def forward_model(model, cooked_batch, ctx_frames, args, v_compress,
         if args.save_codes:
             codes.append(code.data.cpu().numpy())
 
-        output, decoder_h_1, decoder_h_2, decoder_h_3, decoder_h_4 = decoder(
-            code, decoder_h_1, decoder_h_2, decoder_h_3, decoder_h_4,
+        output, decoder_h_1, decoder_h_2, decoder_h_3, decoder_h_4, decoder_h_5 = decoder(
+            code, decoder_h_1, decoder_h_2, decoder_h_3, decoder_h_4, decoder_h_5,
             dec_unet_output1, dec_unet_output2)
 
         res = res - output
@@ -331,25 +336,30 @@ def get_psnr(original, compared):
 
 
 def warp_unet_outputs(flows, unet_output1, unet_output2):
-    [grid_1_4, grid_1_3, grid_1_2] = flows[0]
-    [grid_2_4, grid_2_3, grid_2_2] = flows[1]
+    [grid_1_4, grid_1_3, grid_1_2, grid_1_1] = flows[0]
+    [grid_2_4, grid_2_3, grid_2_2, grid_2_1] = flows[1]
 
     warped_unet_output1, warped_unet_output2 = [], []
 
     warped_unet_output1.append(F.grid_sample(
-        unet_output1[0], grid_1_2, padding_mode='border'))
+        unet_output1[0], grid_1_1, padding_mode='border'))
     warped_unet_output2.append(F.grid_sample(
-        unet_output2[0], grid_2_2, padding_mode='border'))
+        unet_output2[0], grid_2_1, padding_mode='border'))
 
     warped_unet_output1.append(F.grid_sample(
-        unet_output1[1], grid_1_3, padding_mode='border'))
+        unet_output1[1], grid_1_2, padding_mode='border'))
     warped_unet_output2.append(F.grid_sample(
-        unet_output2[1], grid_2_3, padding_mode='border'))
+        unet_output2[1], grid_2_2, padding_mode='border'))
 
     warped_unet_output1.append(F.grid_sample(
-        unet_output1[2], grid_1_4, padding_mode='border'))
+        unet_output1[2], grid_1_3, padding_mode='border'))
     warped_unet_output2.append(F.grid_sample(
-        unet_output2[2], grid_2_4, padding_mode='border'))
+        unet_output2[2], grid_2_3, padding_mode='border'))
+
+    warped_unet_output1.append(F.grid_sample(
+        unet_output1[3], grid_1_4, padding_mode='border'))
+    warped_unet_output2.append(F.grid_sample(
+        unet_output2[3], grid_2_4, padding_mode='border'))
 
     return warped_unet_output1, warped_unet_output2
 
@@ -368,34 +378,45 @@ def init_lstm(batch_size, height, width, args):
         torch.zeros(batch_size, 512, height // 16, width // 16)),
                    Variable(
                        torch.zeros(batch_size, 512, height // 16, width // 16)))
+    encoder_h_4 = (Variable(
+        torch.zeros(batch_size, 512, height // 32, width // 32)),
+                   Variable(
+                       torch.zeros(batch_size, 512, height // 32, width // 32)))
 
     decoder_h_1 = (Variable(
+        torch.zeros(batch_size, 512, height // 32, width // 32)),
+                   Variable(
+                       torch.zeros(batch_size, 512, height // 32, width // 32)))
+    decoder_h_2 = (Variable(
         torch.zeros(batch_size, 512, height // 16, width // 16)),
                    Variable(
                        torch.zeros(batch_size, 512, height // 16, width // 16)))
-    decoder_h_2 = (Variable(
+    decoder_h_3 = (Variable(
         torch.zeros(batch_size, 512, height // 8, width // 8)),
                    Variable(
                        torch.zeros(batch_size, 512, height // 8, width // 8)))
-    decoder_h_3 = (Variable(
+    decoder_h_4 = (Variable(
         torch.zeros(batch_size, 256, height // 4, width // 4)),
                    Variable(
                        torch.zeros(batch_size, 256, height // 4, width // 4)))
-    decoder_h_4 = (Variable(
+    decoder_h_5 = (Variable(
         torch.zeros(batch_size, 256 if False else 128, height // 2, width // 2)),
                    Variable(
                        torch.zeros(batch_size, 256 if False else 128, height // 2, width // 2)))
 
-    encoder_h_1 = (encoder_h_1[0].cuda(), encoder_h_1[1].cuda())
-    encoder_h_2 = (encoder_h_2[0].cuda(), encoder_h_2[1].cuda())
-    encoder_h_3 = (encoder_h_3[0].cuda(), encoder_h_3[1].cuda())
+    encoder_h_1 = (encoder_h_1[0].to(device), encoder_h_1[1].to(device))
+    encoder_h_2 = (encoder_h_2[0].to(device), encoder_h_2[1].to(device))
+    encoder_h_3 = (encoder_h_3[0].to(device), encoder_h_3[1].to(device))
+    encoder_h_4 = (encoder_h_4[0].to(device), encoder_h_4[1].to(device))
 
-    decoder_h_1 = (decoder_h_1[0].cuda(), decoder_h_1[1].cuda())
-    decoder_h_2 = (decoder_h_2[0].cuda(), decoder_h_2[1].cuda())
-    decoder_h_3 = (decoder_h_3[0].cuda(), decoder_h_3[1].cuda())
-    decoder_h_4 = (decoder_h_4[0].cuda(), decoder_h_4[1].cuda())
+    decoder_h_1 = (decoder_h_1[0].to(device), decoder_h_1[1].to(device))
+    decoder_h_2 = (decoder_h_2[0].to(device), decoder_h_2[1].to(device))
+    decoder_h_3 = (decoder_h_3[0].to(device), decoder_h_3[1].to(device))
+    decoder_h_4 = (decoder_h_4[0].to(device), decoder_h_4[1].to(device))
+    decoder_h_5 = (decoder_h_5[0].to(device), decoder_h_5[1].to(device))
 
-    return (encoder_h_1, encoder_h_2, encoder_h_3, 
-            decoder_h_1, decoder_h_2, decoder_h_3, decoder_h_4)
+    return (encoder_h_1, encoder_h_2, encoder_h_3, encoder_h_4,
+            decoder_h_1, decoder_h_2, decoder_h_3, decoder_h_4, decoder_h_5)
+
 
 
