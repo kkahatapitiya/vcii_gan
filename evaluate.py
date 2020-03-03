@@ -13,6 +13,7 @@ from util import eval_forward, evaluate, get_models, set_eval, save_numpy_array_
 from torchvision import transforms
 from dataset import get_loader
 
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu') 
 
 def save_codes(name, codes):
   print(codes)
@@ -61,7 +62,7 @@ def finish_batch(args, filenames, original, out_imgs,
   return all_losses, all_msssim, all_psnr
 
 
-def run_eval(model, eval_loader, args, output_suffix=''):
+def run_eval(model, prev_models, eval_loader, args, output_suffix=''):
 
   for sub_dir in ['codes', 'images']:
     cur_eval_dir = os.path.join(args.out_dir, output_suffix, sub_dir)
@@ -72,13 +73,19 @@ def run_eval(model, eval_loader, args, output_suffix=''):
   all_losses, all_msssim, all_psnr = [], [], []
 
   start_time = time.time()
-  for i, (batch, ctx_frames, filenames) in enumerate(eval_loader):
+  
+  for i, (batch, batch_g, batch_l, ctx_frames, ctx_frames_g, ctx_frames_l, filenames) in enumerate(eval_loader):
 
       with torch.no_grad():
           batch = batch.cuda()
+          batch_g = batch_g.cuda()
+          batch_l = batch_l.cuda()
+          ctx_frames = ctx_frames.cuda()
+          ctx_frames_g = ctx_frames_g.cuda()
+          ctx_frames_l = ctx_frames_l.cuda()
 
           original, out_imgs, losses, code_batch = eval_forward(
-              model, (batch, ctx_frames), args)
+              model, prev_models, (batch, batch_g, batch_l, ctx_frames, ctx_frames_g, ctx_frames_l), args)
 
           losses, msssim, psnr = finish_batch(
               args, filenames, original, out_imgs, 
@@ -95,3 +102,4 @@ def run_eval(model, eval_loader, args, output_suffix=''):
   return (np.array(all_losses).mean(axis=0),
           np.array(all_msssim).mean(axis=0),
           np.array(all_psnr).mean(axis=0))
+

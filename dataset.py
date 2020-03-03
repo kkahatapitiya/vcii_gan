@@ -291,19 +291,57 @@ class ImageFolder(data.Dataset):
         # CV2 cropping in CPU is faster.
         if self.is_train:
             crops = []
+            crops_gaussian = []
+            crops_laplacian = []
+            crop_laps = [[] for j in range(args.prev_levels)]
             for i in range(self._num_crops):
                 crop = crop_cv2(img, self.patch)
                 crop[..., :9] /= 255.0
+
+                crop_gaussian_prev = crop
+                for j in range(args.prev_levels):
+                    crop_gaussian_new = cv2.GaussianBlur(crop_gaussian_prev, (5,5), cv2.BORDER_DEFAULT)
+                    crop_laplacian = crop_gaussian_prev - crop_gaussian_new
+                    crop_gaussian_prev = crop_gaussian_new
+                    crop_laps[j].append(np_to_torch(crop_laplacian))
+
                 crops.append(np_to_torch(crop))
+                crops_gaussian.append(np_to_torch(crop_gaussian_new))
+                crops_laplacian.append(crop_laps)
+            
             data = crops
+            data_gaussian = crops_gaussian
+            data_laplacian = crops_laplacian
         else:
             img[..., :9] /= 255.0
+
+            img_gaussian_prev = img
+            img_laps = []
+            for j in range(args.prev_levels):
+                img_gaussian_new = cv2.GaussianBlur(img_gaussian_prev, (5,5), cv2.BORDER_DEFAULT)
+                img_laplacian = img_gaussian_prev - img_gaussian_new
+                img_gaussian_prev = img_gaussian_new
+                img_laps.append(np_to_torch(img_laplacian))
+
             data = np_to_torch(img)
+            data_gaussian = np_to_torch(img_gaussian_new)
+            data_laplacian = img_laps
 
         ctx_frames /= 255.0
+        ctx_frames_gaussian_prev = ctx_frames
+        ctx_frames_laps = []
+        for j in range(args.prev_levels):
+            ctx_frames_gaussian_new = cv2.GaussianBlur(ctx_frames_gaussian_prev, (5,5), cv2.BORDER_DEFAULT)
+            ctx_frames_laplacian = ctx_frames_gaussian_prev - ctx_frames_gaussian_new
+            ctx_frames_gaussian_prev = ctx_frames_gaussian_new
+            ctx_frames_laps.append(np_to_torch(ctx_frames_laplacian))
+        
         ctx_frames = np_to_torch(ctx_frames)
+        ctx_frames_gaussian = np_to_torch(ctx_frames_gaussian_new)
+        ctx_frames_laplacian = ctx_frames_laps
 
-        return data, ctx_frames, main_fn
+        return data, data_gaussian, data_laplacian, ctx_frames, ctx_frames_gaussian, ctx_frames_laplacian, main_fn
 
     def __len__(self):
         return len(self.imgs)
+
