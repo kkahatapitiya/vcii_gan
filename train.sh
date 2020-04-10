@@ -39,9 +39,8 @@ fi
 # when using a big evaluation dataset.
 # (for the demo data it's okay.)
 
-#--load-model-name "demo" --load-iter 15000 \
 
-python -u train_v3.py \
+python -u train.py \
   --train ${train} \
   --eval ${eval} \
   --train-mv ${train_mv} \
@@ -51,8 +50,9 @@ python -u train_v3.py \
   --v-compress --warp --stack --fuse-encoder \
   --bits ${bits} \
   --distance1 ${distance1} --distance2 ${distance2} \
-  --max-train-iters 30000 \
+  --max-train-iters 20000 \
   --checkpoint-iters 5000 \
-  --eval-iters 1000 \
-  --save-out-img \
-  --batch-size 4
+  --eval-iters 4000 \
+  --model-dir "model" \
+  --batch-size 8 \
+  --schedule "10000,12000,14000,16000,18000" \

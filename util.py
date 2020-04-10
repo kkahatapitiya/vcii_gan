@@ -204,8 +204,9 @@ def forward_ctx(unet, ctx_frames):
 
 def forward_model(model, cooked_batch, ctx_frames, args, v_compress,
                   iterations, encoder_fuse_level, decoder_fuse_level):
-    encoder, binarizer, decoder, unet = model
+    encoder, binarizer, decoder, d2, unet = model
     res, _, _, flows = cooked_batch
+    in_img = res
 
     ctx_frames = Variable(ctx_frames.cuda()) - 0.5
     frame1 = ctx_frames[:, :3]
@@ -219,6 +220,8 @@ def forward_model(model, cooked_batch, ctx_frames, args, v_compress,
                                                                       height,
                                                                       width,
                                                                       args)
+
+    (_,_,_,d2_h_1, d2_h_2, d2_h_3, d2_h_4) = init_rnn(batch_size,height,width,args)
 
     original = res.data.cpu().numpy() + 0.5
 
@@ -249,6 +252,7 @@ def forward_model(model, cooked_batch, ctx_frames, args, v_compress,
 
     codes = []
     prev_psnr = 0.0
+    code_arr=[]
     for _ in range(iterations):
 
         if args.v_compress and args.stack:
@@ -263,19 +267,32 @@ def forward_model(model, cooked_batch, ctx_frames, args, v_compress,
 
         # Binarize.
         code = binarizer(encoded)
-        if args.save_codes:
-            codes.append(code.data.cpu().numpy())
+        code_arr.append(code)
+        #if args.save_codes:
+        #    codes.append(code.data.cpu().numpy())
 
         output, decoder_h_1, decoder_h_2, decoder_h_3, decoder_h_4 = decoder(
             code, decoder_h_1, decoder_h_2, decoder_h_3, decoder_h_4,
             dec_unet_output1, dec_unet_output2)
 
         res = res - output
-        out_img = out_img + output.data.cpu()
-        out_img_np = out_img.numpy().clip(0, 1)
+        #out_img = out_img + output.data.cpu()
+        #out_img_np = out_img.numpy().clip(0, 1)
+        #out_imgs.append(out_img_np)
+        #losses.append(float(res.abs().mean().data.cpu().numpy()))
 
-        out_imgs.append(out_img_np)
-        losses.append(float(res.abs().mean().data.cpu().numpy()))
+    b,d,h,w= code.shape
+    code = torch.stack(code_arr, dim=1).reshape(b,-1,h,w)
+    (output, d2_h_1, d2_h_2, d2_h_3, d2_h_4) = d2(
+            code, d2_h_1, d2_h_2, d2_h_3, d2_h_4,
+            dec_unet_output1, dec_unet_output2)
+    if args.save_codes:
+        codes.append(code.data.cpu().numpy())
+
+    out_img = out_img + output.data.cpu()
+    out_img_np = out_img.numpy().clip(0, 1)
+    out_imgs.append(out_img_np)
+    losses.append(float((in_img - output).abs().mean().data.cpu().numpy()))
 
     return original, np.array(out_imgs), np.array(losses), np.array(codes)
 

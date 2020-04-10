@@ -76,14 +76,14 @@ def run_eval(model, eval_loader, args, output_suffix=''):
 
       with torch.no_grad():
           batch = batch.cuda()
-
+          
           original, out_imgs, losses, code_batch = eval_forward(
-              model, (batch, ctx_frames), args)
-
+                  model, (batch, ctx_frames), args)
+          
           losses, msssim, psnr = finish_batch(
-              args, filenames, original, out_imgs, 
-              losses, code_batch, output_suffix)
-
+                  args, filenames, original, out_imgs, 
+                  losses, code_batch, output_suffix)
+          
           all_losses += losses
           all_msssim += msssim
           all_psnr += psnr
