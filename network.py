@@ -191,6 +191,7 @@ class DecoderCell(nn.Module):
 
 #variable group ---- use this one for now --- best performing
 
+
 class DecoderCell2(nn.Module):
     def __init__(self, v_compress, shrink, bits, fuse_level):
 
@@ -318,40 +319,35 @@ class DecoderCell2(nn.Module):
 
         # Layers.
         self.conv_st_1 = nn.Conv2d(bits*10, 64*groups, kernel_size=1, stride=1, padding=0, bias=False, groups=groups)
-        self.bn_st_1 = nn.BatchNorm2d(64*groups)
         self.conv_st_2 = nn.Conv2d(64*groups, 128*groups, kernel_size=1, stride=1, padding=0, bias=False, groups=groups)
-        self.bn_st_2 = nn.BatchNorm2d(128*groups)
         self.conv_st_3 = nn.Conv2d(128*groups, 512*groups, kernel_size=1, stride=1, padding=0, bias=False, groups=groups)
-        self.bn_st_3 = nn.BatchNorm2d(512*groups)
+        #self.conv_st_4 = nn.Conv2d(512*groups, 512*groups, kernel_size=1, stride=1, padding=0, bias=False, groups=groups)
 
-        #self.res1 = ResNetBlock(512*groups, 512*groups, stride=1, groups=groups)
+        #self.conv1 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv1 = nn.Conv2d(512*groups, 512*groups, groups=groups, kernel_size=3, stride=1, padding=1, bias=False)
 
-        self.conv1 = nn.Conv2d(512, 
-                        512, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(512)
-
-        #self.res2 = ResNetBlock((((128 + 256 // shrink * 2) if v_compress else 128) 
-        #                if self.fuse_level >= 3 else 128), 512, stride=1)
+        self.conv2_g1 = nn.Conv2d(128*groups, 512*groups, groups=groups, kernel_size=3, stride=1, padding=1, bias=False)
+        self.conv2_g2 = nn.Conv2d(512*groups, 128*groups, groups=groups, kernel_size=3, stride=1, padding=1, bias=False)
 
         self.conv2 = nn.Conv2d((((128 + 256 // shrink * 2) if v_compress else 128) 
                         if self.fuse_level >= 3 else 128), 
                         512, kernel_size=3, stride=1, padding=1, bias=False) ##### 128->512
-        self.bn2 = nn.BatchNorm2d(512)
+        self.conv2_2 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1, bias=False)
 
-        #self.res3 = ResNetBlock((((128 + 128//shrink*2) if v_compress else 128) 
-        #                if self.fuse_level >= 2 else 128), 256, stride=1)
 
         self.conv3 = nn.Conv2d((((128 + 128//shrink*2) if v_compress else 128) 
                         if self.fuse_level >= 2 else 128), 
                         256, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn3 = nn.BatchNorm2d(256)
+        self.conv3_2 = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1, bias=False)
 
-        #self.res4 = ResNetBlock((64 + 64//shrink*2) if v_compress else 64, 128, stride=1)
 
         self.conv4 = nn.Conv2d((64 + 64//shrink*2) if v_compress else 64, 
                         128, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn4 = nn.BatchNorm2d(128)
 
+        #self.res1 = ResNetBlock(512*groups, 512*groups, stride=1, groups=groups)
+        #self.res2 = ResNetBlock((((128 + 256 // shrink * 2) if v_compress else 128) if self.fuse_level >= 3 else 128), 512, stride=1)
+        #self.res3 = ResNetBlock((((128 + 128//shrink*2) if v_compress else 128) if self.fuse_level >= 2 else 128), 256, stride=1)
+        #self.res4 = ResNetBlock((64 + 64//shrink*2) if v_compress else 64, 128, stride=1) 
         self.conv_end = nn.Conv2d(32,
                         3, kernel_size=1, stride=1, padding=0, bias=False)
 
@@ -362,19 +358,31 @@ class DecoderCell2(nn.Module):
         x = F.tanh(self.conv_st_1(input))
         x = F.tanh(self.conv_st_2(x))
         x = F.tanh(self.conv_st_3(x))   
+        #x = F.tanh(self.conv_st_4(x)) ####
         #x = self.res1(x)
         #x = F.tanh(self.bn1(self.conv1(x)))
-        if self.groups>1:
-            x = x.reshape(b,10,-1,h,w).sum(1)
+        #if self.groups>1:
+        #    x = x.reshape(b,10,-1,h,w).sum(1)
         x = F.tanh(self.conv1(x))
+        #print(x.shape)
 
         x = F.pixel_shuffle(x, 2)
+        #print(x.shape)
+
+        x = F.tanh(self.conv2_g1(x))
+        x = F.tanh(self.conv2_g2(x))
+        #print(x.shape)
+        if self.groups>1:
+            x = x.reshape(b,10,-1,h*2,w*6).sum(1)
+        #print(x.shape)
 
         if self.v_compress and self.fuse_level >= 3:
             x = torch.cat([x, unet_output1[0], unet_output2[0]], dim=1)
 
         #x = self.res2(x)
+        #print(x.shape)
         x = F.tanh(self.conv2(x))
+        x = F.tanh(self.conv2_2(x)) ####
         x = F.pixel_shuffle(x, 2)
 
         if self.v_compress and self.fuse_level >= 2:
@@ -382,6 +390,7 @@ class DecoderCell2(nn.Module):
 
         #x = self.res3(x)
         x = F.tanh(self.conv3(x))
+        x = F.tanh(self.conv3_2(x)) ####
         x = F.pixel_shuffle(x, 2)
 
         if self.v_compress:
@@ -444,7 +453,6 @@ class ResNetBlock(nn.Module):
         else:
             x_s = x
         return x_s
-
 '''
 
 
