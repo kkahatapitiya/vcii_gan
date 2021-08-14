@@ -40,7 +40,7 @@ def get_models(args, v_compress, bits, encoder_fuse_level, decoder_fuse_level):
 
 
 def get_identity_grid(size):
-    id_mat = Variable(torch.FloatTensor([[1, 0, 0, 0, 1, 0]] * size[0]), 
+    id_mat = Variable(torch.FloatTensor([[1, 0, 0, 0, 1, 0]] * size[0]),
         requires_grad=False).view(-1, 2, 3).cuda()
     return F.affine_grid(id_mat, size)
 
@@ -227,6 +227,7 @@ def forward_model(model, cooked_batch, ctx_frames, args, v_compress,
 
     out_img = torch.zeros(1, 3, height, width) + 0.5
     out_imgs = []
+    out_imgs_ee1, out_imgs_ee2, out_imgs_ee3, out_imgs_ee4 = [], [], [], []
     losses = []
 
     # UNet.
@@ -290,7 +291,8 @@ def forward_model(model, cooked_batch, ctx_frames, args, v_compress,
 
         (d2_h_1, d2_h_2, d2_h_3, d2_h_4) = init_d2(batch_size,height,width,args)
         code_d2 = torch.stack(code_arr, dim=1).reshape(b,-1,h,w)
-        (output_d2, d2_h_1, d2_h_2, d2_h_3, d2_h_4) = d2(
+
+        (output_d2, out_ee1, out_ee2, out_ee3, out_ee4, d2_h_1, d2_h_2, d2_h_3, d2_h_4) = d2(
                 code_d2, d2_h_1, d2_h_2, d2_h_3, d2_h_4,
                 dec_unet_output1, dec_unet_output2)
         if args.save_codes:
@@ -301,19 +303,24 @@ def forward_model(model, cooked_batch, ctx_frames, args, v_compress,
         out_imgs.append(out_img_np)
         losses.append(float((in_img - output_d2).abs().mean().data.cpu().numpy()))
 
-    return original, np.array(out_imgs), np.array(losses), np.array(codes)
+        out_imgs_ee1.append((out_img + out_ee1.data.cpu()).numpy().clip(0, 1))
+        out_imgs_ee2.append((out_img + out_ee2.data.cpu()).numpy().clip(0, 1))
+        out_imgs_ee3.append((out_img + out_ee3.data.cpu()).numpy().clip(0, 1))
+        out_imgs_ee4.append((out_img + out_ee4.data.cpu()).numpy().clip(0, 1))
+
+    return original, np.array(out_imgs), np.array(out_imgs_ee1), np.array(out_imgs_ee2), np.array(out_imgs_ee3), np.array(out_imgs_ee4), np.array(losses), np.array(codes)
 
 
 def save_numpy_array_as_image(filename, arr):
     imsave(
-        filename, 
+        filename,
         np.squeeze(arr * 255.0).astype(np.uint8)
         .transpose(1, 2, 0))
 
 
 def save_torch_array_as_image(filename, arr):
     imsave(
-        filename, 
+        filename,
         np.squeeze(arr.numpy().clip(0, 1) * 255.0).astype(np.uint8)
         .transpose(1, 2, 0))
 
@@ -324,6 +331,11 @@ def evaluate(original, out_imgs):
     psnrs    = np.array([   get_psnr(original, out_img) for out_img in out_imgs])
 
     return ms_ssims, psnrs
+
+
+def evaluate_psnr(original, out_imgs):
+    psnrs    = np.array([   get_psnr(original, out_img) for out_img in out_imgs])
+    return psnrs
 
 
 def evaluate_all(original, out_imgs):
@@ -419,7 +431,7 @@ def init_lstm(batch_size, height, width, args):
     decoder_h_3 = (decoder_h_3[0].cuda(), decoder_h_3[1].cuda())
     decoder_h_4 = (decoder_h_4[0].cuda(), decoder_h_4[1].cuda())
 
-    return (encoder_h_1, encoder_h_2, encoder_h_3, 
+    return (encoder_h_1, encoder_h_2, encoder_h_3,
             decoder_h_1, decoder_h_2, decoder_h_3, decoder_h_4)
 
 def init_d2(batch_size, height, width, args):
@@ -447,5 +459,3 @@ def init_d2(batch_size, height, width, args):
     decoder_h_4 = (decoder_h_4[0].cuda(), decoder_h_4[1].cuda())
 
     return (decoder_h_1, decoder_h_2, decoder_h_3, decoder_h_4)
-
-

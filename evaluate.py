@@ -9,7 +9,7 @@ import torch
 from torch.autograd import Variable
 import torch.utils.data as data
 
-from util import eval_forward, evaluate, get_models, set_eval, save_numpy_array_as_image
+from util import eval_forward, evaluate, evaluate_psnr, get_models, set_eval, save_numpy_array_as_image
 from torchvision import transforms
 from dataset import get_loader
 
@@ -27,7 +27,7 @@ def save_codes(name, codes):
 def save_output_images(name, ex_imgs):
   for i, img in enumerate(ex_imgs):
     save_numpy_array_as_image(
-      '%s_iter%02d.png' % (name, i + 1), 
+      '%s_iter%02d.png' % (name, i + 1),
       img
     )
 
@@ -51,7 +51,7 @@ def finish_batch(args, filenames, original, out_imgs,
         )
 
       msssim, psnr = evaluate(
-        original[None, ex_idx], 
+        original[None, ex_idx],
         [out_img[None, ex_idx] for out_img in out_imgs])
 
       all_losses.append(losses)
@@ -59,6 +59,20 @@ def finish_batch(args, filenames, original, out_imgs,
       all_psnr.append(psnr)
 
   return all_losses, all_msssim, all_psnr
+
+
+def get_psnr(args, filenames, original, out_imgs):
+
+  all_psnr = []
+  for ex_idx, filename in enumerate(filenames):
+
+      psnr = evaluate_psnr(
+        original[None, ex_idx],
+        [out_img[None, ex_idx] for out_img in out_imgs])
+
+      all_psnr.append(psnr)
+
+  return all_psnr
 
 
 def run_eval(model, eval_loader, args, output_suffix=''):
@@ -70,23 +84,34 @@ def run_eval(model, eval_loader, args, output_suffix=''):
       os.makedirs(cur_eval_dir)
 
   all_losses, all_msssim, all_psnr = [], [], []
+  all_psnr_ee1, all_psnr_ee2, all_psnr_ee3, all_psnr_ee4 = [], [], [], []
 
   start_time = time.time()
   for i, (batch, ctx_frames, filenames) in enumerate(eval_loader):
 
       with torch.no_grad():
           batch = batch.cuda()
-          
-          original, out_imgs, losses, code_batch = eval_forward(
+
+          original, out_imgs, out_imgs_ee1, out_imgs_ee2, out_imgs_ee3, out_imgs_ee4, losses, code_batch = eval_forward(
                   model, (batch, ctx_frames), args)
-          
+
           losses, msssim, psnr = finish_batch(
-                  args, filenames, original, out_imgs, 
+                  args, filenames, original, out_imgs,
                   losses, code_batch, output_suffix)
-          
+
+          psnr_ee1 = get_psnr(args, filenames, original, out_imgs_ee1)
+          psnr_ee2 = get_psnr(args, filenames, original, out_imgs_ee2)
+          psnr_ee3 = get_psnr(args, filenames, original, out_imgs_ee3)
+          psnr_ee4 = get_psnr(args, filenames, original, out_imgs_ee4)
+
           all_losses += losses
           all_msssim += msssim
           all_psnr += psnr
+
+          all_psnr_ee1 += psnr_ee1
+          all_psnr_ee2 += psnr_ee2
+          all_psnr_ee3 += psnr_ee3
+          all_psnr_ee4 += psnr_ee4
 
       if i % 10 == 0:
         print('\tevaluating iter %d (%f seconds)...' % (
@@ -94,4 +119,9 @@ def run_eval(model, eval_loader, args, output_suffix=''):
 
   return (np.array(all_losses).mean(axis=0),
           np.array(all_msssim).mean(axis=0),
-          np.array(all_psnr).mean(axis=0))
+          np.array(all_psnr).mean(axis=0),
+          np.array(all_psnr_ee1).mean(axis=0),
+          np.array(all_psnr_ee2).mean(axis=0),
+          np.array(all_psnr_ee3).mean(axis=0),
+          np.array(all_psnr_ee4).mean(axis=0)
+          )

@@ -82,4 +82,3 @@ class ConvLSTMCell(ConvRNNCellBase):
         hy = outgate * F.tanh(cy)
 
         return hy, cy
-

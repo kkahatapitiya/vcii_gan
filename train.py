@@ -24,7 +24,7 @@ print(args)
 ############### Data ###############
 train_loader = get_loader(
   is_train=True,
-  root=args.train, mv_dir=args.train_mv, 
+  root=args.train, mv_dir=args.train_mv,
   args=args
 )
 
@@ -42,7 +42,7 @@ def get_eval_loaders():
 
 ############### Model ###############
 encoder, binarizer, decoder, unet = get_models(
-  args=args, v_compress=args.v_compress, 
+  args=args, v_compress=args.v_compress,
   bits=args.bits,
   encoder_fuse_level=args.encoder_fuse_level,
   decoder_fuse_level=args.decoder_fuse_level)
@@ -63,7 +63,7 @@ if len(gpus) > 1:
 
 params = [{'params': net.parameters()} for net in nets]
 
-code.interact(local=locals()) ########
+#code.interact(local=locals()) ########
 
 solver = optim.Adam(
     params,
@@ -84,7 +84,7 @@ def resume(model_name, index):
     if net is not None:
       name = names[net_idx]
       checkpoint_path = '{}/{}_{}_{:08d}.pth'.format(
-          args.model_dir, model_name, 
+          args.model_dir, model_name,
           name, index)
 
       print('Loading %s from %s...' % (name, checkpoint_path))
@@ -96,9 +96,9 @@ def save(index):
 
   for net_idx, net in enumerate(nets):
     if net is not None:
-      torch.save(net.state_dict(), 
+      torch.save(net.state_dict(),
                  '{}/{}_{}_{:08d}.pth'.format(
-                   args.model_dir, args.save_model_name, 
+                   args.model_dir, args.save_model_name,
                    names[net_idx], index))
 
 
@@ -152,6 +152,7 @@ while True:
 
         losses = []
         rec2_losses = []
+        ee1_losses, ee2_losses, ee3_losses, ee4_losses = [], [], [], []
 
         bp_t0 = time.time()
         batch_size, _, height, width = res.size()
@@ -163,7 +164,7 @@ while True:
         code_arr=[torch.zeros(b,d,h,w).cuda() for i in range(args.iterations)]
         #print(res.shape)
         #cum_output_d2 = torch.zeros(1, 3, height, width).cuda()
-        
+
         for i in range(args.iterations):
             if args.v_compress and args.stack:
                 encoder_input = torch.cat([frame1, res, frame2], dim=1)
@@ -197,19 +198,27 @@ while True:
             #b,d,h,w= codes.shape
             codes_d2 = torch.stack(code_arr, dim=1).reshape(b,-1,h,w)
             #print('iter',i,codes_d2)
-            (output_d2, d2_h_1, d2_h_2, d2_h_3, d2_h_4) = d2(
+            (output_d2, out_ee1, out_ee2, out_ee3, out_ee4, d2_h_1, d2_h_2, d2_h_3, d2_h_4) = d2(
                     codes_d2, d2_h_1, d2_h_2, d2_h_3, d2_h_4,
                     warped_unet_output1, warped_unet_output2)
             #cum_output_d2 += output_d2
 
             rec2_losses.append((in_img - output_d2).abs().mean())
+            ee1_losses.append((in_img - out_ee1).abs().mean())
+            ee2_losses.append((in_img - out_ee2).abs().mean())
+            ee3_losses.append((in_img - out_ee3).abs().mean())
+            ee4_losses.append((in_img - out_ee4).abs().mean())
             #rec2_losses.append((in_img - cum_output_d2).abs().mean())
 
         bp_t1 = time.time()
 
         rec1_loss = sum(losses) / args.iterations
         rec2_loss = sum(rec2_losses) / args.iterations
-        loss = (rec1_loss+rec2_loss)*0.5
+        ee1_loss = sum(ee1_losses) / args.iterations
+        ee2_loss = sum(ee2_losses) / args.iterations
+        ee3_loss = sum(ee3_losses) / args.iterations
+        ee4_loss = sum(ee4_losses) / args.iterations
+        loss = (rec1_loss+rec2_loss)*0.5 + (ee1_loss+ee2_loss+ee3_loss+ee4_loss)*0.25
         loss.backward()
 
         for net in [encoder, binarizer, decoder, unet, d2]:
@@ -220,14 +229,19 @@ while True:
 
         batch_t1 = time.time()
 
-        print(
-            '[TRAIN] Iter[{}]; LR: {}; Rec1 Loss: {:.6f}; Rec2 Loss: {:.6f}; Backprop: {:.4f} sec; Batch: {:.4f} sec'.
-            format(train_iter, 
-                   scheduler.get_lr()[0], 
-                   rec1_loss.item(),
-                   rec2_loss.item(),
-                   bp_t1 - bp_t0, 
-                   batch_t1 - batch_t0))
+        if train_iter % 10 == 0:
+            print(
+                '[TRAIN] Iter[{}]; LR: {}; Losses [Rec1: {:.6f}; Rec2: {:.6f}; EE1: {:.6f}; EE2: {:.6f}; EE3: {:.6f}; EE4: {:.6f}]; Backprop: {:.4f} sec; Batch: {:.4f} sec'.
+                format(train_iter,
+                       scheduler.get_lr()[0],
+                       rec1_loss.item(),
+                       rec2_loss.item(),
+                       ee1_loss.item(),
+                       ee2_loss.item(),
+                       ee3_loss.item(),
+                       ee4_loss.item(),
+                       bp_t1 - bp_t0,
+                       batch_t1 - batch_t0))
 
         if train_iter % 100 == 0:
             print('Loss at each step:')
@@ -245,17 +259,26 @@ while True:
             eval_loaders = get_eval_loaders()
             for eval_name, eval_loader in eval_loaders.items():
                 eval_begin = time.time()
-                eval_loss, mssim, psnr = run_eval(nets, eval_loader, args,
+                eval_loss, mssim, psnr, psnr_ee1, psnr_ee2, psnr_ee3, psnr_ee4 = run_eval(nets, eval_loader, args,
                     output_suffix='iter%d' % train_iter)
 
                 print('Evaluation @iter %d done in %d secs' % (
                     train_iter, time.time() - eval_begin))
-                print('%s Loss   : ' % eval_name
+                print('%s Loss    : ' % eval_name
                       + '\t'.join(['%.5f' % el for el in eval_loss.tolist()]))
-                print('%s MS-SSIM: ' % eval_name
+                print('%s MS-SSIM : ' % eval_name
                       + '\t'.join(['%.5f' % el for el in mssim.tolist()]))
-                print('%s PSNR   : ' % eval_name
+                print('%s PSNR    : ' % eval_name
                       + '\t'.join(['%.5f' % el for el in psnr.tolist()]))
+
+                print('%s EE1 PSNR: ' % eval_name
+                      + '\t'.join(['%.5f' % el for el in psnr_ee1.tolist()]))
+                print('%s EE2 PSNR: ' % eval_name
+                      + '\t'.join(['%.5f' % el for el in psnr_ee2.tolist()]))
+                print('%s EE3 PSNR: ' % eval_name
+                      + '\t'.join(['%.5f' % el for el in psnr_ee3.tolist()]))
+                print('%s EE4 PSNR: ' % eval_name
+                      + '\t'.join(['%.5f' % el for el in psnr_ee4.tolist()]))
 
             set_train(nets)
             just_resumed = False

@@ -18,8 +18,8 @@ class EncoderCell(nn.Module):
 
         # Layers.
         self.conv = nn.Conv2d(
-            9 if stack else 3, 
-            64, 
+            9 if stack else 3,
+            64,
             kernel_size=3, stride=2, padding=1, bias=False)
 
         self.rnn1 = ConvLSTMCell(
@@ -32,7 +32,7 @@ class EncoderCell(nn.Module):
             bias=False)
 
         self.rnn2 = ConvLSTMCell(
-            ((384 if fuse_encoder and v_compress else 256) 
+            ((384 if fuse_encoder and v_compress else 256)
              if self.fuse_level >= 2 else 256),
             512,
             kernel_size=3,
@@ -42,7 +42,7 @@ class EncoderCell(nn.Module):
             bias=False)
 
         self.rnn3 = ConvLSTMCell(
-            ((768 if fuse_encoder and v_compress else 512) 
+            ((768 if fuse_encoder and v_compress else 512)
              if self.fuse_level >= 3 else 512),
             512,
             kernel_size=3,
@@ -113,7 +113,7 @@ class DecoderCell(nn.Module):
             bias=False)
 
         self.rnn2 = ConvLSTMCell(
-            (((128 + 256 // shrink * 2) if v_compress else 128) 
+            (((128 + 256 // shrink * 2) if v_compress else 128)
              if self.fuse_level >= 3 else 128), #out1=256
             512,
             kernel_size=3,
@@ -123,7 +123,7 @@ class DecoderCell(nn.Module):
             bias=False)
 
         self.rnn3 = ConvLSTMCell(
-            (((128 + 128//shrink*2) if v_compress else 128) 
+            (((128 + 128//shrink*2) if v_compress else 128)
              if self.fuse_level >= 2 else 128), #out2=128
             256,
             kernel_size=3,
@@ -143,7 +143,7 @@ class DecoderCell(nn.Module):
 
         self.conv2 = nn.Conv2d(
             32,
-            3, 
+            3,
             kernel_size=1, stride=1, padding=0, bias=False)
 
     def forward(self, input, hidden1, hidden2, hidden3, hidden4,
@@ -192,6 +192,32 @@ class DecoderCell(nn.Module):
 #variable group ---- use this one for now --- best performing
 
 
+class EarlyExit(nn.Module):
+    def __init__(self, shuffle_up, conv_in):
+        super(EarlyExit, self).__init__()
+        self.shuffle_up = shuffle_up
+        self.conv_in = conv_in
+        self.conv = nn.Conv2d(conv_in//(shuffle_up**2), 3, kernel_size=1, stride=1, padding=0, bias=False)
+        ''' # progressive
+        self.exit_head = []
+        while self.shuffle_up != 2:
+            self.shuffle_up = self.shuffle_up//2
+            self.conv_in = self.conv_in//4
+            self.exit_head.append(nn.PixelShuffle(2))
+            self.exit_head.append(nn.Conv2d(self.conv_in, self.conv_in, kernel_size=1, stride=1, padding=0, bias=False))
+            self.exit_head.append(nn.ReLU())
+        self.exit_head.append(nn.PixelShuffle(2))
+        self.exit_head.append(nn.Conv2d(self.conv_in//4, 3, kernel_size=1, stride=1, padding=0, bias=False))
+        self.exit_head = nn.Sequential(*self.exit_head)'''
+
+    def forward(self, input):
+        x = F.pixel_shuffle(input, self.shuffle_up)
+        x = self.conv(x)
+        #x = self.exit_head(input)
+        return F.tanh(x) / 2
+
+
+
 class DecoderCell2(nn.Module):
     def __init__(self, v_compress, shrink, bits, fuse_level):
 
@@ -213,6 +239,11 @@ class DecoderCell2(nn.Module):
         #self.bn2 = nn.BatchNorm2d(128*10)
         #self.bn3 = nn.BatchNorm2d(512*10)
 
+        self.ee1 = EarlyExit(shuffle_up=16, conv_in=512)
+        self.ee2 = EarlyExit(shuffle_up=8, conv_in=512)
+        self.ee3 = EarlyExit(shuffle_up=4, conv_in=256)
+        self.ee4 = EarlyExit(shuffle_up=2, conv_in=128)
+
         self.rnn1 = ConvLSTMCell(
             512,
             512,
@@ -223,7 +254,7 @@ class DecoderCell2(nn.Module):
             bias=False)
 
         self.rnn2 = ConvLSTMCell(
-            (((128 + 256 // shrink * 2) if v_compress else 128) 
+            (((128 + 256 // shrink * 2) if v_compress else 128)
              if self.fuse_level >= 3 else 128), #out1=256
             512,
             kernel_size=3,
@@ -233,7 +264,7 @@ class DecoderCell2(nn.Module):
             bias=False)
 
         self.rnn3 = ConvLSTMCell(
-            (((128 + 128//shrink*2) if v_compress else 128) 
+            (((128 + 128//shrink*2) if v_compress else 128)
              if self.fuse_level >= 2 else 128), #out2=128
             256,
             kernel_size=3,
@@ -253,22 +284,28 @@ class DecoderCell2(nn.Module):
 
         self.conv_end = nn.Conv2d(
             32,
-            3, 
+            3,
             kernel_size=1, stride=1, padding=0, bias=False)
 
     def forward(self, input, hidden1, hidden2, hidden3, hidden4,
                 unet_output1, unet_output2):
 
-        b,d,h,w = input.shape
+        b,d,h,w = input.shape # 4x4, 80
+        #print('1: {}'.format(input.shape))
         x = F.relu(self.conv1(input)) #F.tanh
         x = F.relu(self.conv2(x))
         x = F.relu(self.conv3(x))
-        x = x.reshape(b,10,-1,h,w).sum(1)
+        #print('2: {}'.format(x.shape))
+        x = x.reshape(b,10,-1,h,w).sum(1) # 4x4, 512
+        #print('3: {}'.format(x.shape))
         hidden1 = self.rnn1(x, hidden1)
 
         # rnn 2
         x = hidden1[0]
-        x = F.pixel_shuffle(x, 2)
+        out_ee1 = self.ee1(x) #.detach())
+        #print('4: {}'.format(x.shape))
+        x = F.pixel_shuffle(x, 2) # 8x8, 128
+        #print('5: {}'.format(x.shape))
 
         if self.v_compress and self.fuse_level >= 3:
             x = torch.cat([x, unet_output1[0], unet_output2[0]], dim=1)
@@ -277,7 +314,9 @@ class DecoderCell2(nn.Module):
 
         # rnn 3
         x = hidden2[0]
-        x = F.pixel_shuffle(x, 2)
+        out_ee2 = self.ee2(x) #.detach())
+        x = F.pixel_shuffle(x, 2) # 16x16, 128
+        #print('6: {}'.format(x.shape))
 
         if self.v_compress and self.fuse_level >= 2:
             x = torch.cat([x, unet_output1[1], unet_output2[1]], dim=1)
@@ -286,7 +325,9 @@ class DecoderCell2(nn.Module):
 
         # rnn 4
         x = hidden3[0]
-        x = F.pixel_shuffle(x, 2)
+        out_ee3 = self.ee3(x) #.detach())
+        x = F.pixel_shuffle(x, 2) # 32x32, 64
+        #print('7: {}'.format(x.shape))
 
         if self.v_compress:
             x = torch.cat([x, unet_output1[2], unet_output2[2]], dim=1)
@@ -295,10 +336,12 @@ class DecoderCell2(nn.Module):
 
         # final
         x = hidden4[0]
-        x = F.pixel_shuffle(x, 2)
+        out_ee4 = self.ee4(x) #.detach())
+        x = F.pixel_shuffle(x, 2) # 64x64, 32
+        #print('8: {}'.format(x.shape))
 
         x = F.tanh(self.conv_end(x)) / 2
-        return x, hidden1, hidden2, hidden3, hidden4
+        return x, out_ee1, out_ee2, out_ee3, out_ee4, hidden1, hidden2, hidden3, hidden4
 
 
 
@@ -329,25 +372,25 @@ class DecoderCell2(nn.Module):
         self.conv2_g1 = nn.Conv2d(128*groups, 512*groups, groups=groups, kernel_size=3, stride=1, padding=1, bias=False)
         self.conv2_g2 = nn.Conv2d(512*groups, 128*groups, groups=groups, kernel_size=3, stride=1, padding=1, bias=False)
 
-        self.conv2 = nn.Conv2d((((128 + 256 // shrink * 2) if v_compress else 128) 
-                        if self.fuse_level >= 3 else 128), 
+        self.conv2 = nn.Conv2d((((128 + 256 // shrink * 2) if v_compress else 128)
+                        if self.fuse_level >= 3 else 128),
                         512, kernel_size=3, stride=1, padding=1, bias=False) ##### 128->512
         self.conv2_2 = nn.Conv2d(512, 512, kernel_size=3, stride=1, padding=1, bias=False)
 
 
-        self.conv3 = nn.Conv2d((((128 + 128//shrink*2) if v_compress else 128) 
-                        if self.fuse_level >= 2 else 128), 
+        self.conv3 = nn.Conv2d((((128 + 128//shrink*2) if v_compress else 128)
+                        if self.fuse_level >= 2 else 128),
                         256, kernel_size=3, stride=1, padding=1, bias=False)
         self.conv3_2 = nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1, bias=False)
 
 
-        self.conv4 = nn.Conv2d((64 + 64//shrink*2) if v_compress else 64, 
+        self.conv4 = nn.Conv2d((64 + 64//shrink*2) if v_compress else 64,
                         128, kernel_size=3, stride=1, padding=1, bias=False)
 
         #self.res1 = ResNetBlock(512*groups, 512*groups, stride=1, groups=groups)
         #self.res2 = ResNetBlock((((128 + 256 // shrink * 2) if v_compress else 128) if self.fuse_level >= 3 else 128), 512, stride=1)
         #self.res3 = ResNetBlock((((128 + 128//shrink*2) if v_compress else 128) if self.fuse_level >= 2 else 128), 256, stride=1)
-        #self.res4 = ResNetBlock((64 + 64//shrink*2) if v_compress else 64, 128, stride=1) 
+        #self.res4 = ResNetBlock((64 + 64//shrink*2) if v_compress else 64, 128, stride=1)
         self.conv_end = nn.Conv2d(32,
                         3, kernel_size=1, stride=1, padding=0, bias=False)
 
@@ -357,7 +400,7 @@ class DecoderCell2(nn.Module):
         b,d,h,w = input.shape
         x = F.tanh(self.conv_st_1(input))
         x = F.tanh(self.conv_st_2(x))
-        x = F.tanh(self.conv_st_3(x))   
+        x = F.tanh(self.conv_st_3(x))
         #x = F.tanh(self.conv_st_4(x)) ####
         #x = self.res1(x)
         #x = F.tanh(self.bn1(self.conv1(x)))
@@ -432,7 +475,7 @@ class ResNetBlock(nn.Module):
                 self.bn2d_s = nn.BatchNorm2d(self.fout)
         self.relu = nn.LeakyReLU(0.2, inplace=True)
         #self.tanh = nn.Tanh()
-        
+
     def forward(self, x):
         x_s = self._shortcut(x)
         dx = self.conv_0(x)
@@ -471,38 +514,38 @@ class DecoderCell2(nn.Module):
         print('\tDecoder fuse level: {}'.format(self.fuse_level))
 
         # Layers.
-        self.conv_st = nn.Conv2d(bits*10, 
+        self.conv_st = nn.Conv2d(bits*10,
                         512, kernel_size=1, stride=1, padding=0, bias=False)
         self.bn_st = nn.BatchNorm2d(512)
 
-        #self.conv1 = nn.Conv2d(512, 
+        #self.conv1 = nn.Conv2d(512,
         #                512, kernel_size=3, stride=1, padding=1, bias=False)
         #self.bn1 = nn.BatchNorm2d(512)
         self.res1 = ResNetBlock(512, 512, stride=1)
 
-        #self.conv1_2 = nn.Conv2d(512, 
+        #self.conv1_2 = nn.Conv2d(512,
         #                512, kernel_size=3, stride=1, padding=1, bias=False)
         #self.bn1_2 = nn.BatchNorm2d(512)
 
-        #self.conv2 = nn.Conv2d((((512 + 256 // shrink * 2) if v_compress else 512) 
-        #                if self.fuse_level >= 3 else 512), 
+        #self.conv2 = nn.Conv2d((((512 + 256 // shrink * 2) if v_compress else 512)
+        #                if self.fuse_level >= 3 else 512),
         #                512, kernel_size=3, stride=1, padding=1, bias=False) ##### 128->512
         #self.bn2 = nn.BatchNorm2d(512)
-        self.res2 = ResNetBlock((((128 + 256 // shrink * 2) if v_compress else 128) 
+        self.res2 = ResNetBlock((((128 + 256 // shrink * 2) if v_compress else 128)
                         if self.fuse_level >= 3 else 128), 512, stride=1)
 
-        #self.conv2_2 = nn.Conv2d(512, 
+        #self.conv2_2 = nn.Conv2d(512,
         #                512, kernel_size=3, stride=1, padding=1, bias=False)
         #self.bn2_2 = nn.BatchNorm2d(512)
 
-        #self.conv3 = nn.Conv2d((((128 + 128//shrink*2) if v_compress else 128) 
-        #                if self.fuse_level >= 2 else 128), 
+        #self.conv3 = nn.Conv2d((((128 + 128//shrink*2) if v_compress else 128)
+        #                if self.fuse_level >= 2 else 128),
         #                256, kernel_size=3, stride=1, padding=1, bias=False)
         #self.bn3 = nn.BatchNorm2d(256)
-        self.res3 = ResNetBlock((((128 + 128//shrink*2) if v_compress else 128) 
+        self.res3 = ResNetBlock((((128 + 128//shrink*2) if v_compress else 128)
                         if self.fuse_level >= 2 else 128), 256, stride=1)
 
-        #self.conv4 = nn.Conv2d((64 + 64//shrink*2) if v_compress else 64, 
+        #self.conv4 = nn.Conv2d((64 + 64//shrink*2) if v_compress else 64,
         #                128, kernel_size=3, stride=1, padding=1, bias=False)
         #self.bn4 = nn.BatchNorm2d(128)
         self.res4 = ResNetBlock((64 + 64//shrink*2) if v_compress else 64, 128, stride=1)
@@ -574,7 +617,7 @@ class ResNetBlock(nn.Module):
             if self.bn:
                 self.bn2d_s = nn.BatchNorm2d(self.fout)
         self.relu = nn.LeakyReLU(0.2, inplace=True)
-        
+
     def forward(self, x):
         x_s = self._shortcut(x)
         dx = self.conv_0(x)
